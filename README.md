@@ -1,6 +1,11 @@
-# JOndra
+# JOndra FLTK
 
 ## Česky
+
+C++ port emulátoru československého počítače Ondra SPO 186. Vychází z původního emulátoru JOndra napsaného v Javě:
+https://github.com/omikron88/jondra
+
+Projekt používá FLTK a C++98 a je určen jak pro současný Linux, tak pro starší systémy včetně Windows 98.
 
 ### Linux
 
@@ -41,7 +46,14 @@ Případně lze samostatně otevřít:
 Jondra.dsp
 ```
 
+---
+
 ## English
+
+C++ port of the Ondra SPO 186 Czechoslovak computer emulator. It is based on the original JOndra emulator written in Java:
+https://github.com/omikron88/jondra
+
+The project uses FLTK and C++98 and supports both modern Linux and older systems including Windows 98.
 
 ### Linux
 
