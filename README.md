@@ -1,89 +1,83 @@
 # JOndra
 
-Emulátor počítače Ondra SPO 186.
+## Česky
 
-Projekt obsahuje dva nezávislé buildy:
+### Linux
 
-- Linux: CMake, systémové FLTK 1.3 a ALSA
-- Windows 98 / Visual C++ 6: původní `Jondra.dsw` a `Jondra.dsp` s FLTK 1.1.10
-
-## Linux – potřebné balíky
-
-Debian/Ubuntu:
+Potřebné balíky pro Debian/Ubuntu:
 
 ```bash
-sudo apt update
-sudo apt install build-essential cmake libfltk1.3-dev libasound2-dev
+sudo apt install build-essential cmake libfltk1.3-dev libasound2-dev libpng-dev
 ```
 
-## Release build – kompatibilní s Ubuntu 18.04 / CMake 3.10
+Na Debianu Squeeze použij místo `libfltk1.3-dev` balík `libfltk1.1-dev`.
 
-Nejjednodušší způsob:
+Sestavení pomocí skriptu:
 
 ```bash
 ./build-linux-release.sh
 ```
 
-Počet paralelních úloh lze změnit:
-
-```bash
-JOBS=4 ./build-linux-release.sh
-```
-
-Ruční ekvivalent:
+Ruční sestavení pomocí CMake:
 
 ```bash
 mkdir -p build/release
 cd build/release
 cmake -DCMAKE_BUILD_TYPE=Release ../..
-cmake --build . -- -j2
+make -j2
 ```
 
-Spuštění:
+### Windows 98
 
-```bash
-cd build/release/bin
-./Jondra
-```
-
-## Debug build – kompatibilní s CMake 3.10
-
-```bash
-mkdir -p build/debug
-cd build/debug
-cmake -DCMAKE_BUILD_TYPE=Debug ../..
-cmake --build . -- -j2
-```
-
-## Novější CMake
-
-Na novějších distribucích lze použít také presety:
-
-```bash
-cmake --preset linux-release
-cmake --build --preset linux-release --parallel 2
-```
-
-`CMakePresets.json` není určen pro CMake 3.10 z Ubuntu 18.04.
-
-## Windows 98 / Visual C++ 6
-
-Použij:
+Pro Windows 98 použij Visual C++ 6.0 a FLTK 1.1.10. Projekt otevři pomocí:
 
 ```text
 Jondra.dsw
+```
+
+Případně lze samostatně otevřít:
+
+```text
 Jondra.dsp
 ```
 
-Legacy Windows build používá FLTK 1.1.10. CMake build je určen jen pro Linux.
+## English
 
-## Runtime soubory
+### Linux
 
-Po sestavení CMake automaticky zkopíruje vedle programu:
+Required packages for Debian/Ubuntu:
+
+```bash
+sudo apt install build-essential cmake libfltk1.3-dev libasound2-dev libpng-dev
+```
+
+On Debian Squeeze use `libfltk1.1-dev` instead of `libfltk1.3-dev`.
+
+Build using the script:
+
+```bash
+./build-linux-release.sh
+```
+
+Manual CMake build:
+
+```bash
+mkdir -p build/release
+cd build/release
+cmake -DCMAKE_BUILD_TYPE=Release ../..
+make -j2
+```
+
+### Windows 98
+
+For Windows 98 use Visual C++ 6.0 and FLTK 1.1.10. Open the project with:
 
 ```text
-Jondra.config
-images/
-roms/
-sound/
+Jondra.dsw
+```
+
+Alternatively, open the project file directly:
+
+```text
+Jondra.dsp
 ```
