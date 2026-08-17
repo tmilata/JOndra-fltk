@@ -54,6 +54,10 @@ BSC32=bscmake.exe
 LINK32=link.exe
 # ADD BASE LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /nologo /subsystem:windows /machine:I386
 # ADD LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib ws2_32.lib comctl32.lib ..\fltk-1.1.10\lib\fltk.lib ..\fltk-1.1.10\lib\fltkforms.lib ..\fltk-1.1.10\lib\fltkgl.lib ..\fltk-1.1.10\lib\fltkimages.lib ..\fltk-1.1.10\lib\fltkjpeg.lib ..\fltk-1.1.10\lib\fltkpng.lib ..\fltk-1.1.10\lib\fltkz.lib /nologo /subsystem:windows /machine:I386 /nodefaultlib:"LIBCMT.lib"
+# Begin Special Build Tool
+SOURCE="$(InputPath)"
+PostBuild_Cmds=if not exist "dist\Win98-Win11" md "dist\Win98-Win11"	copy /Y "Release\Jondra.exe" "dist\Win98-Win11\Jondra.exe"
+# End Special Build Tool
 
 !ELSEIF  "$(CFG)" == "Jondra - Win32 Debug"
 

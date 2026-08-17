@@ -21,6 +21,8 @@ MTimer::MTimer(Ondra* ondra)
     : m(ondra), intervalMs(20), running(false)
 #ifdef _WIN32
     , threadHandle(NULL)
+#else
+    , threadHandle(0)
 #endif
 {
 #ifdef _WIN32
@@ -67,6 +69,7 @@ void MTimer::StopTimer() {
 #else
     if (threadHandle) {
         pthread_join(threadHandle, NULL);
+        threadHandle = 0;
     }
 #endif
     //CDebug::debug("StopTimer finished.");

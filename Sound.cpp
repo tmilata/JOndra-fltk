@@ -13,6 +13,132 @@
 #pragma comment(lib, "winmm.lib")
 #endif
 
+
+#ifndef _WIN32
+/*
+ * ALSA writes its probing/configuration errors to stderr by default.  That is
+ * useful for command-line tools, but very noisy for a GUI emulator when a
+ * machine simply has no sound card or no PulseAudio/PipeWire plugin.  JOndra
+ * probes several devices intentionally, therefore suppress ALSA's own probe
+ * messages and handle failure through return codes instead.
+ */
+static void jondraAlsaSilentErrorHandler(const char* file,
+                                         int line,
+                                         const char* function,
+                                         int err,
+                                         const char* format,
+                                         ...)
+{
+    (void)file;
+    (void)line;
+    (void)function;
+    (void)err;
+    (void)format;
+}
+
+/*
+ * snd_pcm_set_params() in ALSA 1.2.4 rejects a device when rate_near() returns
+ * even a one-Hz difference (for example VMware ES1371 returns 44101 Hz for a
+ * requested 44100 Hz).  Configure the same basic PCM parameters explicitly
+ * and accept the actual rate selected by ALSA instead.
+ */
+static int jondraConfigurePcm(snd_pcm_t* pcm,
+                              unsigned int requestedRate,
+                              unsigned int* actualRateOut)
+{
+    snd_pcm_hw_params_t* hwParams;
+    unsigned int actualRate;
+    unsigned int bufferTime;
+    unsigned int periodTime;
+    snd_pcm_uframes_t bufferFrames;
+    int dir;
+    int err;
+
+    if (pcm == NULL || actualRateOut == NULL) {
+        return -EINVAL;
+    }
+
+    snd_pcm_hw_params_alloca(&hwParams);
+
+    err = snd_pcm_hw_params_any(pcm, hwParams);
+    if (err < 0) {
+        return err;
+    }
+
+    // Keep software rate conversion enabled for plug/default devices.
+    err = snd_pcm_hw_params_set_rate_resample(pcm, hwParams, 1);
+    if (err < 0) {
+        return err;
+    }
+
+    err = snd_pcm_hw_params_set_access(pcm,
+                                       hwParams,
+                                       SND_PCM_ACCESS_RW_INTERLEAVED);
+    if (err < 0) {
+        return err;
+    }
+
+    err = snd_pcm_hw_params_set_format(pcm,
+                                       hwParams,
+                                       SND_PCM_FORMAT_S16_LE);
+    if (err < 0) {
+        return err;
+    }
+
+    err = snd_pcm_hw_params_set_channels(pcm, hwParams, 1);
+    if (err < 0) {
+        return err;
+    }
+
+    actualRate = requestedRate;
+    dir = 0;
+    err = snd_pcm_hw_params_set_rate_near(pcm,
+                                          hwParams,
+                                          &actualRate,
+                                          &dir);
+    if (err < 0) {
+        return err;
+    }
+
+    // Request approximately the same 120 ms hardware buffer that the old
+    // snd_pcm_set_params() path used.  If a driver cannot express buffer time,
+    // fall back to a frame count derived from the actual device rate.
+    bufferTime = 120000;
+    dir = 0;
+    err = snd_pcm_hw_params_set_buffer_time_near(pcm,
+                                                  hwParams,
+                                                  &bufferTime,
+                                                  &dir);
+    if (err < 0) {
+        bufferFrames = (snd_pcm_uframes_t)
+            (((unsigned long)actualRate * 120UL) / 1000UL);
+        err = snd_pcm_hw_params_set_buffer_size_near(pcm,
+                                                      hwParams,
+                                                      &bufferFrames);
+        if (err < 0) {
+            return err;
+        }
+    } else {
+        // Prefer four periods in the selected buffer, just like
+        // snd_pcm_set_params().  This is a preference, not a hard requirement.
+        periodTime = bufferTime / 4;
+        dir = 0;
+        snd_pcm_hw_params_set_period_time_near(pcm,
+                                                hwParams,
+                                                &periodTime,
+                                                &dir);
+    }
+
+    err = snd_pcm_hw_params(pcm, hwParams);
+    if (err < 0) {
+        return err;
+    }
+
+    *actualRateOut = actualRate;
+    return 0;
+}
+#endif
+
 double Sound::sampleRate = 44100.0;
 int Sound::BUFFER_SIZE = (int)(Sound::sampleRate / 50); // 882 samples = 20 ms
 // Buffer contains 16-bit mono data, therefore 2 bytes per sample.
@@ -256,11 +382,12 @@ void Sound::openAudio() {
 #else
     int err;
     int deviceIndex;
+    int cardIndex;
+    unsigned int actualRate;
     // Desktop sessions normally work best through the default ALSA plugin.
     // When running as root, old Ubuntu/PulseAudio installations often have no
-    // usable per-user PulseAudio socket, so try the VirtualBox/physical ALSA
-    // device first. All opens are non-blocking and happen in this worker
-    // thread, therefore an unavailable server can never freeze FLTK.
+    // usable per-user PulseAudio socket, so try the physical ALSA path first.
+    // All opens are non-blocking and happen in this worker thread.
     const char* desktopDeviceNames[] = {
         "plug:default",
         "default",
@@ -284,48 +411,66 @@ void Sound::openAudio() {
         : desktopDeviceNames;
     snd_pcm_sw_params_t* swParams;
     snd_pcm_hw_params_t* hwParams;
-    unsigned int actualRate;
     int dir;
 
     if (pcmHandle != NULL) {
         return;
     }
 
-    // Open non-blocking. Once configuration has completed, the handle is
-    // switched back to blocking mode for the dedicated writer thread.
-    for (deviceIndex = 0; deviceNames[deviceIndex] != NULL; deviceIndex++) {
-        if (!pcmThreadRunning) {
-            return;
-        }
-
-        err = snd_pcm_open(&pcmHandle,
-                           deviceNames[deviceIndex],
-                           SND_PCM_STREAM_PLAYBACK,
-                           SND_PCM_NONBLOCK);
-        if (err >= 0) {
-            break;
-        }
-        pcmHandle = NULL;
-    }
-
-    if (pcmHandle == NULL) {
+    /*
+     * First check whether ALSA sees any real sound card at all.  On headless
+     * servers / VMs there may be only /dev/snd/seq and /dev/snd/timer.  In
+     * that case probing "default", "pulse", "hw:0,0", ... only produces a
+     * page of harmless ALSA errors.  Disable output silently instead.
+     */
+    snd_lib_error_set_handler(jondraAlsaSilentErrorHandler);
+    cardIndex = -1;
+    err = snd_card_next(&cardIndex);
+    if (err < 0 || cardIndex < 0) {
+        snd_lib_error_set_handler(NULL);
         bOutputEnabled = false;
         return;
     }
 
-    // snd_pcm_set_params() also enables software conversion. This is important
-    // on current Linux desktops, where the physical/PipeWire graph commonly
-    // runs at 48 kHz while JOndra generates its original 44.1 kHz samples.
-    err = snd_pcm_set_params(pcmHandle,
-                             SND_PCM_FORMAT_S16_LE,
-                             SND_PCM_ACCESS_RW_INTERLEAVED,
-                             1,
-                             (unsigned int)sampleRate,
-                             1,        // allow software resampling
-                             120000); // requested latency: 120 ms
-    if (err < 0) {
-        snd_pcm_close(pcmHandle);
-        pcmHandle = NULL;
+    /*
+     * Open and configure each candidate as one operation.  Do not stop merely
+     * because a PCM name can be opened but cannot provide the requested mono
+     * S16 stream.  This also lets old hardware such as VMware's ES1371 use
+     * 44101 Hz when 44100 Hz is not representable exactly.
+     */
+    for (deviceIndex = 0; deviceNames[deviceIndex] != NULL; deviceIndex++) {
+        snd_pcm_t* candidate = NULL;
+
+        if (!pcmThreadRunning) {
+            snd_lib_error_set_handler(NULL);
+            return;
+        }
+
+        err = snd_pcm_open(&candidate,
+                           deviceNames[deviceIndex],
+                           SND_PCM_STREAM_PLAYBACK,
+                           SND_PCM_NONBLOCK);
+        if (err < 0 || candidate == NULL) {
+            continue;
+        }
+
+        actualRate = (unsigned int)sampleRate;
+        err = jondraConfigurePcm(candidate,
+                                 (unsigned int)sampleRate,
+                                 &actualRate);
+        if (err >= 0) {
+            pcmHandle = candidate;
+            pcmRate = actualRate;
+            break;
+        }
+
+        snd_pcm_close(candidate);
+    }
+
+    // Restore the normal ALSA error handler after deliberate probing ends.
+    snd_lib_error_set_handler(NULL);
+
+    if (pcmHandle == NULL) {
         bOutputEnabled = false;
         return;
     }

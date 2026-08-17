@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 2.8.2)
 
 project(JOndra C CXX)
 
+# Volitelny plne staticky Linux build (urceny hlavne pro Alpine/musl).
+option(JONDRA_STATIC "Build fully static Linux executable" OFF)
+set(JONDRA_STATIC_PREFIX "/opt/jondra-static" CACHE PATH
+    "Prefix containing static FLTK and ALSA")
+
 if(WIN32)
     message(FATAL_ERROR
         "Tento CMake build je urcen pro Linux. Pro Windows 98/Visual C++ 6 "
@@ -27,9 +32,17 @@ else()
 endif()
 
 # fltk-config funguje jak s FLTK 1.1.x (Debian Squeeze), tak s novejsim FLTK.
-find_program(FLTK_CONFIG_EXECUTABLE NAMES fltk-config)
-if(NOT FLTK_CONFIG_EXECUTABLE)
-    message(FATAL_ERROR "Nenalezen fltk-config. Nainstaluj vyvojovy balicek FLTK (na Squeeze libfltk1.1-dev).")
+# Pro staticky build pouzijeme FLTK sestavene zvlast v JONDRA_STATIC_PREFIX.
+if(JONDRA_STATIC)
+    set(FLTK_CONFIG_EXECUTABLE "${JONDRA_STATIC_PREFIX}/bin/fltk-config")
+    if(NOT EXISTS "${FLTK_CONFIG_EXECUTABLE}")
+        message(FATAL_ERROR "Nenalezen staticky FLTK: ${FLTK_CONFIG_EXECUTABLE}")
+    endif()
+else()
+    find_program(FLTK_CONFIG_EXECUTABLE NAMES fltk-config)
+    if(NOT FLTK_CONFIG_EXECUTABLE)
+        message(FATAL_ERROR "Nenalezen fltk-config. Nainstaluj vyvojovy balicek FLTK (na Squeeze libfltk1.1-dev).")
+    endif()
 endif()
 
 execute_process(
@@ -42,14 +55,20 @@ if(NOT FLTK_CXX_RESULT EQUAL 0)
     message(FATAL_ERROR "fltk-config --use-images --cxxflags selhal")
 endif()
 
+if(JONDRA_STATIC)
+    set(FLTK_LINK_SWITCH --ldstaticflags)
+else()
+    set(FLTK_LINK_SWITCH --ldflags)
+endif()
+
 execute_process(
-    COMMAND ${FLTK_CONFIG_EXECUTABLE} --use-images --ldflags
+    COMMAND ${FLTK_CONFIG_EXECUTABLE} --use-images ${FLTK_LINK_SWITCH}
     RESULT_VARIABLE FLTK_LD_RESULT
     OUTPUT_VARIABLE FLTK_LDFLAGS_RAW
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 if(NOT FLTK_LD_RESULT EQUAL 0)
-    message(FATAL_ERROR "fltk-config --use-images --ldflags selhal")
+    message(FATAL_ERROR "fltk-config --use-images ${FLTK_LINK_SWITCH} selhal")
 endif()
 
 # CMake 2.8.2 nema moderni target_compile_options().
@@ -59,7 +78,37 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${FLTK_CXXFLAGS_RAW}")
 set(FLTK_LDFLAGS ${FLTK_LDFLAGS_RAW})
 separate_arguments(FLTK_LDFLAGS)
 
-find_package(ALSA REQUIRED)
+if(JONDRA_STATIC)
+    set(ALSA_INCLUDE_DIRS "${JONDRA_STATIC_PREFIX}/include")
+    set(ALSA_LIBRARIES "${JONDRA_STATIC_PREFIX}/lib/libasound.a")
+    if(NOT EXISTS "${ALSA_LIBRARIES}")
+        message(FATAL_ERROR "Nenalezena staticka ALSA: ${ALSA_LIBRARIES}")
+    endif()
+
+    # fltk-config vypise prime zavislosti, ale pri statickem linkovani je
+    # potreba i jejich tranzitivni zavislost (xcb, Xau, Xdmcp, freetype,
+    # expat, zlib, bzip2...). Tu nechej zjistit pkg-config z konkretniho
+    # Alpine systemu, na kterem se binarka sestavuje.
+    find_program(PKG_CONFIG_EXECUTABLE NAMES pkg-config)
+    if(NOT PKG_CONFIG_EXECUTABLE)
+        message(FATAL_ERROR "Pro staticky build je potreba pkg-config")
+    endif()
+    execute_process(
+        COMMAND ${PKG_CONFIG_EXECUTABLE} --static --libs
+                xrender xfixes xext xft fontconfig xinerama x11
+        RESULT_VARIABLE STATIC_DEPS_RESULT
+        OUTPUT_VARIABLE STATIC_DEPS_RAW
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(NOT STATIC_DEPS_RESULT EQUAL 0)
+        message(FATAL_ERROR "pkg-config --static pro X11/Fontconfig zavislosti selhal")
+    endif()
+    set(STATIC_DEPS_LDFLAGS ${STATIC_DEPS_RAW})
+    separate_arguments(STATIC_DEPS_LDFLAGS)
+else()
+    find_package(ALSA REQUIRED)
+endif()
+
 find_package(Threads REQUIRED)
 
 # Stary FindALSA mohl poskytovat ALSA_INCLUDE_DIR namisto ALSA_INCLUDE_DIRS.
@@ -155,11 +204,27 @@ set_target_properties(Jondra PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
-target_link_libraries(Jondra
-    ${FLTK_LDFLAGS}
-    ${ALSA_LIBRARIES}
-    ${CMAKE_THREAD_LIBS_INIT}
-)
+if(JONDRA_STATIC)
+    # -static se tyka jen finalni JOndry. ResPacker muze zustat dynamicky.
+    set_target_properties(Jondra PROPERTIES LINK_FLAGS "-static")
+
+    # U statickych archivu zalezi na poradi. --start-group/--end-group
+    # dovoli GNU linkeru projit archivy opakovane a vyresit kruhove zavislosti.
+    target_link_libraries(Jondra
+        "-Wl,--start-group"
+        ${FLTK_LDFLAGS}
+        ${ALSA_LIBRARIES}
+        ${STATIC_DEPS_LDFLAGS}
+        m pthread rt
+        "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(Jondra
+        ${FLTK_LDFLAGS}
+        ${ALSA_LIBRARIES}
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+endif()
 
 # Images/ROM/sound jsou od teto chvile soucasti executable. Vedle Jondra
 # zustava pouze uzivatelsky editovatelny konfiguracni soubor.
@@ -175,6 +240,7 @@ install(TARGETS Jondra RUNTIME DESTINATION .)
 install(FILES "${JONDRA_ASSET_DIR}/Jondra.config" DESTINATION .)
 
 message(STATUS "JOndra build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "JOndra static build: ${JONDRA_STATIC}")
 message(STATUS "JOndra resource source: ${JONDRA_ASSET_DIR}")
 message(STATUS "JOndra embedded data: ${EMBEDDED_RESOURCES_DATA}")
 message(STATUS "FLTK config: ${FLTK_CONFIG_EXECUTABLE}")
